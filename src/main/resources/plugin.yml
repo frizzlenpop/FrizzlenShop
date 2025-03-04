@@ -1,0 +1,7 @@
+name: FrizzlenStore
+version: '1.0-SNAPSHOT'
+main: org.frizzlenpop.frizzlenStore.FrizzlenStore
+api-version: '1.21'
+load: STARTUP
+authors: [ frizzlenpop ]
+description: A Plugin for Custom Enchants. 
