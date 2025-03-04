@@ -1,0 +1,50 @@
+# Payment Gateway Configuration
+
+# PayPal Gateway
+paypal:
+  # Enable PayPal gateway
+  enabled: false
+  # PayPal client ID
+  client_id: ""
+  # PayPal client secret
+  client_secret: ""
+  # Use sandbox mode (for testing)
+  sandbox: true
+  # Currency code
+  currency: "USD"
+  # Display name
+  display_name: "PayPal"
+
+# Stripe Gateway
+stripe:
+  # Enable Stripe gateway
+  enabled: false
+  # Stripe API key
+  api_key: ""
+  # Stripe publishable key
+  publishable_key: ""
+  # Use test mode (for testing)
+  test_mode: true
+  # Currency code
+  currency: "USD"
+  # Display name
+  display_name: "Credit Card"
+
+# Crypto Gateway
+crypto:
+  # Enable Crypto gateway
+  enabled: false
+  # CoinPayments API key
+  api_key: ""
+  # CoinPayments API secret
+  api_secret: ""
+  # Merchant ID
+  merchant_id: ""
+  # IPN secret
+  ipn_secret: ""
+  # Accepted currencies (BTC, ETH, LTC, etc.)
+  accepted_currencies:
+    - "BTC"
+    - "ETH"
+  # Display name
+  display_name: "Cryptocurrency" 
