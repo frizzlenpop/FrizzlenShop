@@ -1,0 +1,49 @@
+# FrizzlenStore Configuration
+# Documentation: https://github.com/frizzlenpop/frizzlenstore/wiki
+
+# Debug mode (enables additional logging)
+debug: false
+
+# API settings
+api:
+  # API URL (used for web store communication)
+  url: "http://localhost:3000"
+  # API port (the port the API server will listen on)
+  port: 8080
+  # API token (used for authentication)
+  token: "change-this-to-a-secure-random-string"
+
+# Store settings
+store:
+  # Store URL (shown to players)
+  url: "http://localhost:3000"
+  # Store name (shown in messages)
+  name: "FrizzlenStore"
+  # Store currency (used in messages)
+  currency: "$"
+  # Store currency symbol position (before or after)
+  currency_position: "before"
+
+# Message settings
+messages:
+  # Prefix for all messages
+  prefix: "&6[FrizzlenStore] &r"
+  # Message sent when a player receives a purchase
+  purchase_delivered: "&aYour purchase has been delivered! Enjoy!"
+  # Message sent when a player makes a purchase
+  purchase_made: "&aThank you for your purchase! Your items have been delivered."
+  # Message sent when a player makes a purchase while offline
+  purchase_offline: "&aThank you for your purchase! Your items will be delivered when you next join the server."
+
+# Discord webhook settings
+discord:
+  # Enable Discord webhooks
+  enabled: false
+  # Webhook URL
+  webhook_url: ""
+  # Message format
+  message_format: "**{player}** purchased **{product}** for **{price}**"
+  # Username to use for webhook
+  username: "FrizzlenStore"
+  # Avatar URL to use for webhook
+  avatar_url: "https://i.imgur.com/wSTFkRM.png" 

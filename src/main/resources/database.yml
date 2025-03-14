@@ -1,0 +1,23 @@
+# Database Configuration
+# Available types: mysql, mariadb, sqlite
+
+# Database type
+type: "mariadb"
+
+# Database connection settings (used for mysql and mariadb)
+host: "localhost"
+port: 3306
+database: "frizzlenstore"
+username: "frizzlenstore"
+password: ""
+
+# Connection pool settings
+pool:
+  # Minimum number of connections
+  min_connections: 2
+  # Maximum number of connections
+  max_connections: 10
+  # Connection timeout in milliseconds
+  timeout: 30000
+  # Maximum lifetime of a connection in milliseconds
+  max_lifetime: 1800000 

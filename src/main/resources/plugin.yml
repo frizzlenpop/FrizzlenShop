@@ -1,0 +1,21 @@
+name: FrizzlenStore
+version: '1.0-SNAPSHOT'
+main: org.frizzlenpop.frizzlenStore.FrizzlenStore
+api-version: '1.21'
+load: STARTUP
+authors: [ frizzlenpop ]
+description: A self-hosted donation and web store system for Minecraft servers.
+
+commands:
+  frizzlenstore:
+    description: Main command for FrizzlenStore
+    aliases: [fs, store, shop]
+    usage: /frizzlenstore <subcommand>
+
+permissions:
+  frizzlenstore.admin:
+    description: Allows access to administrative commands
+    default: op
+  frizzlenstore.use:
+    description: Allows access to basic commands
+    default: true
