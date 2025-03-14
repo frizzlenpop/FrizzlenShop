@@ -27,10 +27,14 @@ public class StatusHandler implements HttpHandler {
     
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        Logger.info("Status endpoint accessed from: " + exchange.getRemoteAddress());
+        
         // Set CORS headers
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Credentials", "true");
+        exchange.getResponseHeaders().add("Access-Control-Max-Age", "3600");
         
         // Handle preflight requests
         if (exchange.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
@@ -67,10 +71,13 @@ public class StatusHandler implements HttpHandler {
         int onlinePlayers = Bukkit.getOnlinePlayers().size();
         int maxPlayers = Bukkit.getMaxPlayers();
         boolean databaseConnected = plugin.getDatabaseManager().getConnection() != null;
+        String apiUrl = plugin.getConfigManager().getApiUrl();
+        int apiPort = plugin.getConfigManager().getApiPort();
         
         return String.format(
                 "{" +
                 "\"status\": \"online\"," +
+                "\"timestamp\": %d," +
                 "\"server\": {" +
                 "\"version\": \"%s\"," +
                 "\"players\": {" +
@@ -83,11 +90,16 @@ public class StatusHandler implements HttpHandler {
                 "\"version\": \"%s\"," +
                 "\"apiVersion\": \"%s\"" +
                 "}," +
+                "\"api\": {" +
+                "\"url\": \"%s\"," +
+                "\"port\": %d" +
+                "}," +
                 "\"database\": {" +
                 "\"connected\": %b" +
                 "}" +
                 "}",
-                serverVersion, onlinePlayers, maxPlayers, pluginVersion, apiVersion, databaseConnected
+                System.currentTimeMillis(), serverVersion, onlinePlayers, maxPlayers, 
+                pluginVersion, apiVersion, apiUrl, apiPort, databaseConnected
         );
     }
     

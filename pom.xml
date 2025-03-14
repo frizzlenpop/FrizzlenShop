@@ -101,6 +101,14 @@
             <scope>compile</scope>
         </dependency>
         
+        <!-- MariaDB JDBC Driver -->
+        <dependency>
+            <groupId>org.mariadb.jdbc</groupId>
+            <artifactId>mariadb-java-client</artifactId>
+            <version>3.3.2</version>
+            <scope>compile</scope>
+        </dependency>
+        
         <!-- SQLite JDBC -->
         <dependency>
             <groupId>org.xerial</groupId>

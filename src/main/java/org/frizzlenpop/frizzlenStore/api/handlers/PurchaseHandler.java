@@ -3,6 +3,7 @@ package org.frizzlenpop.frizzlenStore.api.handlers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.frizzlenpop.frizzlenStore.FrizzlenStore;
 import org.frizzlenpop.frizzlenStore.util.Logger;
 import org.json.JSONArray;
@@ -39,7 +40,9 @@ public class PurchaseHandler implements HttpHandler {
         // Set CORS headers
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Credentials", "true");
+        exchange.getResponseHeaders().add("Access-Control-Max-Age", "3600");
         
         if (exchange.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
             exchange.sendResponseHeaders(204, -1);
@@ -115,11 +118,10 @@ public class PurchaseHandler implements HttpHandler {
     private void handleGetPurchases(HttpExchange exchange) throws IOException {
         try {
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT pu.*, pr.name as product_name, pl.name as player_name " +
+            String query = "SELECT pu.*, pr.name as product_name " +
                            "FROM purchases pu " +
                            "JOIN products pr ON pu.product_id = pr.id " +
-                           "LEFT JOIN players pl ON pu.player_uuid = pl.uuid " +
-                           "ORDER BY pu.created_at DESC LIMIT 100";
+                           "ORDER BY pu.id DESC LIMIT 100";
             PreparedStatement statement = connection.prepareStatement(query);
             ResultSet resultSet = statement.executeQuery();
 
@@ -128,14 +130,44 @@ public class PurchaseHandler implements HttpHandler {
                 JSONObject purchase = new JSONObject();
                 purchase.put("id", resultSet.getInt("id"));
                 purchase.put("player_uuid", resultSet.getString("player_uuid"));
-                purchase.put("player_name", resultSet.getString("player_name"));
+                
+                // Handle player_name which may not exist in older database versions
+                try {
+                    String playerName = resultSet.getString("player_name");
+                    if (playerName != null) {
+                        purchase.put("player_name", playerName);
+                    } else {
+                        purchase.put("player_name", "Unknown");
+                    }
+                } catch (SQLException e) {
+                    purchase.put("player_name", "Unknown");
+                }
+                
                 purchase.put("product_id", resultSet.getInt("product_id"));
                 purchase.put("product_name", resultSet.getString("product_name"));
-                purchase.put("price", resultSet.getDouble("price"));
-                purchase.put("payment_id", resultSet.getInt("payment_id"));
-                purchase.put("status", resultSet.getString("status"));
-                purchase.put("created_at", resultSet.getString("created_at"));
-                purchase.put("delivered_at", resultSet.getString("delivered_at"));
+                purchase.put("price", resultSet.getDouble("price_paid"));
+                purchase.put("payment_method", resultSet.getString("payment_method"));
+                purchase.put("status", resultSet.getString("payment_status"));
+                
+                // Safely get timestamp information
+                try {
+                    java.sql.Timestamp timestamp = resultSet.getTimestamp("purchase_time");
+                    if (timestamp == null) {
+                        // Try alternative column names
+                        try {
+                            timestamp = resultSet.getTimestamp("created_at");
+                        } catch (SQLException e2) {
+                            // Use current time as last resort
+                            timestamp = new java.sql.Timestamp(System.currentTimeMillis());
+                        }
+                    }
+                    purchase.put("created_at", timestamp.toString());
+                    purchase.put("updated_at", timestamp.toString());
+                } catch (SQLException e) {
+                    // Fallback to current time if column doesn't exist
+                    purchase.put("created_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                    purchase.put("updated_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                }
                 purchases.put(purchase);
             }
 
@@ -180,11 +212,10 @@ public class PurchaseHandler implements HttpHandler {
             int purchaseId = Integer.parseInt(parts[3]);
             
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT pu.*, pr.name as product_name, pr.commands, pl.name as player_name " +
-                           "FROM purchases pu " +
-                           "JOIN products pr ON pu.product_id = pr.id " +
-                           "LEFT JOIN players pl ON pu.player_uuid = pl.uuid " +
-                           "WHERE pu.id = ?";
+            String query = "SELECT pu.*, pr.name as product_name, pr.commands " +
+                          "FROM purchases pu " +
+                          "JOIN products pr ON pu.product_id = pr.id " +
+                          "WHERE pu.id = ?";
             PreparedStatement statement = connection.prepareStatement(query);
             statement.setInt(1, purchaseId);
             ResultSet resultSet = statement.executeQuery();
@@ -199,20 +230,51 @@ public class PurchaseHandler implements HttpHandler {
                 sendResponse(exchange, 404, response);
                 return;
             }
-            
+
             JSONObject purchase = new JSONObject();
             purchase.put("id", resultSet.getInt("id"));
             purchase.put("player_uuid", resultSet.getString("player_uuid"));
-            purchase.put("player_name", resultSet.getString("player_name"));
+            
+            // Handle player_name which may not exist in older database versions
+            try {
+                String playerName = resultSet.getString("player_name");
+                if (playerName != null) {
+                    purchase.put("player_name", playerName);
+                } else {
+                    purchase.put("player_name", "Unknown");
+                }
+            } catch (SQLException e) {
+                purchase.put("player_name", "Unknown");
+            }
+            
             purchase.put("product_id", resultSet.getInt("product_id"));
             purchase.put("product_name", resultSet.getString("product_name"));
-            purchase.put("price", resultSet.getDouble("price"));
-            purchase.put("payment_id", resultSet.getInt("payment_id"));
-            purchase.put("status", resultSet.getString("status"));
-            purchase.put("created_at", resultSet.getString("created_at"));
-            purchase.put("delivered_at", resultSet.getString("delivered_at"));
-            purchase.put("commands", new JSONArray(resultSet.getString("commands")));
+            purchase.put("price", resultSet.getDouble("price_paid"));
+            purchase.put("payment_method", resultSet.getString("payment_method"));
+            purchase.put("status", resultSet.getString("payment_status"));
             
+            // Safely get timestamp information
+            try {
+                java.sql.Timestamp timestamp = resultSet.getTimestamp("purchase_time");
+                if (timestamp == null) {
+                    // Try alternative column names
+                    try {
+                        timestamp = resultSet.getTimestamp("created_at");
+                    } catch (SQLException e2) {
+                        // Use current time as last resort
+                        timestamp = new java.sql.Timestamp(System.currentTimeMillis());
+                    }
+                }
+                purchase.put("created_at", timestamp.toString());
+                purchase.put("updated_at", timestamp.toString());
+            } catch (SQLException e) {
+                // Fallback to current time if column doesn't exist
+                purchase.put("created_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                purchase.put("updated_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+            }
+            purchase.put("commands", resultSet.getString("commands"));
+            purchase.put("delivered", resultSet.getBoolean("delivered"));
+
             resultSet.close();
             statement.close();
 
@@ -244,7 +306,7 @@ public class PurchaseHandler implements HttpHandler {
      * @throws IOException If an I/O error occurs
      */
     private void handleGetPlayerPurchases(HttpExchange exchange) throws IOException {
-        // Get player UUID from path
+        // Get player uuid from path
         String path = exchange.getRequestURI().getPath();
         String[] parts = path.split("/");
         if (parts.length < 5) {
@@ -260,12 +322,11 @@ public class PurchaseHandler implements HttpHandler {
             String playerUuid = parts[4];
             
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT pu.*, pr.name as product_name, pl.name as player_name " +
-                           "FROM purchases pu " +
-                           "JOIN products pr ON pu.product_id = pr.id " +
-                           "LEFT JOIN players pl ON pu.player_uuid = pl.uuid " +
-                           "WHERE pu.player_uuid = ? " +
-                           "ORDER BY pu.created_at DESC";
+            String query = "SELECT pu.*, pr.name as product_name, pr.commands " +
+                          "FROM purchases pu " +
+                          "JOIN products pr ON pu.product_id = pr.id " +
+                          "WHERE pu.player_uuid = ? " +
+                          "ORDER BY pu.id DESC";
             PreparedStatement statement = connection.prepareStatement(query);
             statement.setString(1, playerUuid);
             ResultSet resultSet = statement.executeQuery();
@@ -275,14 +336,46 @@ public class PurchaseHandler implements HttpHandler {
                 JSONObject purchase = new JSONObject();
                 purchase.put("id", resultSet.getInt("id"));
                 purchase.put("player_uuid", resultSet.getString("player_uuid"));
-                purchase.put("player_name", resultSet.getString("player_name"));
+                
+                // Handle player_name which may not exist in older database versions
+                try {
+                    String playerName = resultSet.getString("player_name");
+                    if (playerName != null) {
+                        purchase.put("player_name", playerName);
+                    } else {
+                        purchase.put("player_name", "Unknown");
+                    }
+                } catch (SQLException e) {
+                    purchase.put("player_name", "Unknown");
+                }
+                
                 purchase.put("product_id", resultSet.getInt("product_id"));
                 purchase.put("product_name", resultSet.getString("product_name"));
-                purchase.put("price", resultSet.getDouble("price"));
-                purchase.put("payment_id", resultSet.getInt("payment_id"));
-                purchase.put("status", resultSet.getString("status"));
-                purchase.put("created_at", resultSet.getString("created_at"));
-                purchase.put("delivered_at", resultSet.getString("delivered_at"));
+                purchase.put("price", resultSet.getDouble("price_paid"));
+                purchase.put("payment_method", resultSet.getString("payment_method"));
+                purchase.put("status", resultSet.getString("payment_status"));
+                
+                // Safely get timestamp information
+                try {
+                    java.sql.Timestamp timestamp = resultSet.getTimestamp("purchase_time");
+                    if (timestamp == null) {
+                        // Try alternative column names
+                        try {
+                            timestamp = resultSet.getTimestamp("created_at");
+                        } catch (SQLException e2) {
+                            // Use current time as last resort
+                            timestamp = new java.sql.Timestamp(System.currentTimeMillis());
+                        }
+                    }
+                    purchase.put("created_at", timestamp.toString());
+                    purchase.put("updated_at", timestamp.toString());
+                } catch (SQLException e) {
+                    // Fallback to current time if column doesn't exist
+                    purchase.put("created_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                    purchase.put("updated_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                }
+                purchase.put("commands", resultSet.getString("commands"));
+                purchase.put("delivered", resultSet.getBoolean("delivered"));
                 purchases.put(purchase);
             }
 
@@ -291,7 +384,6 @@ public class PurchaseHandler implements HttpHandler {
 
             JSONObject response = new JSONObject();
             response.put("success", true);
-            response.put("player_uuid", playerUuid);
             response.put("purchases", purchases);
             
             sendResponse(exchange, 200, response.toString());
@@ -314,12 +406,11 @@ public class PurchaseHandler implements HttpHandler {
     private void handleGetPendingPurchases(HttpExchange exchange) throws IOException {
         try {
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT pu.*, pr.name as product_name, pl.name as player_name " +
-                           "FROM purchases pu " +
-                           "JOIN products pr ON pu.product_id = pr.id " +
-                           "LEFT JOIN players pl ON pu.player_uuid = pl.uuid " +
-                           "WHERE pu.status = 'pending' " +
-                           "ORDER BY pu.created_at ASC";
+            String query = "SELECT pu.*, pr.name as product_name, pr.commands " +
+                          "FROM purchases pu " +
+                          "JOIN products pr ON pu.product_id = pr.id " +
+                          "WHERE pu.delivered = 0 " +
+                          "ORDER BY pu.id ASC";
             PreparedStatement statement = connection.prepareStatement(query);
             ResultSet resultSet = statement.executeQuery();
 
@@ -328,13 +419,46 @@ public class PurchaseHandler implements HttpHandler {
                 JSONObject purchase = new JSONObject();
                 purchase.put("id", resultSet.getInt("id"));
                 purchase.put("player_uuid", resultSet.getString("player_uuid"));
-                purchase.put("player_name", resultSet.getString("player_name"));
+                
+                // Handle player_name which may not exist in older database versions
+                try {
+                    String playerName = resultSet.getString("player_name");
+                    if (playerName != null) {
+                        purchase.put("player_name", playerName);
+                    } else {
+                        purchase.put("player_name", "Unknown");
+                    }
+                } catch (SQLException e) {
+                    purchase.put("player_name", "Unknown");
+                }
+                
                 purchase.put("product_id", resultSet.getInt("product_id"));
                 purchase.put("product_name", resultSet.getString("product_name"));
-                purchase.put("price", resultSet.getDouble("price"));
-                purchase.put("payment_id", resultSet.getInt("payment_id"));
-                purchase.put("status", resultSet.getString("status"));
-                purchase.put("created_at", resultSet.getString("created_at"));
+                purchase.put("price", resultSet.getDouble("price_paid"));
+                purchase.put("payment_method", resultSet.getString("payment_method"));
+                purchase.put("status", resultSet.getString("payment_status"));
+                
+                // Safely get timestamp information
+                try {
+                    java.sql.Timestamp timestamp = resultSet.getTimestamp("purchase_time");
+                    if (timestamp == null) {
+                        // Try alternative column names
+                        try {
+                            timestamp = resultSet.getTimestamp("created_at");
+                        } catch (SQLException e2) {
+                            // Use current time as last resort
+                            timestamp = new java.sql.Timestamp(System.currentTimeMillis());
+                        }
+                    }
+                    purchase.put("created_at", timestamp.toString());
+                    purchase.put("updated_at", timestamp.toString());
+                } catch (SQLException e) {
+                    // Fallback to current time if column doesn't exist
+                    purchase.put("created_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                    purchase.put("updated_at", new java.sql.Timestamp(System.currentTimeMillis()).toString());
+                }
+                purchase.put("commands", resultSet.getString("commands"));
+                purchase.put("delivered", resultSet.getBoolean("delivered"));
                 purchases.put(purchase);
             }
 
@@ -412,14 +536,63 @@ public class PurchaseHandler implements HttpHandler {
             productStatement.close();
             
             // Create the purchase through the purchase manager
-            boolean purchaseSuccess = plugin.getPurchaseManager().createPurchase(
-                playerUuid, 
-                productId, 
-                price, 
-                productName, 
-                "API", 
-                paymentId > 0 ? String.valueOf(paymentId) : null
-            );
+            boolean purchaseSuccess = false;
+            
+            try {
+                // Get player name from UUID
+                String playerName = null;
+                try {
+                    UUID uuid = UUID.fromString(playerUuid);
+                    Player player = Bukkit.getPlayer(uuid);
+                    if (player != null) {
+                        playerName = player.getName();
+                    }
+                } catch (IllegalArgumentException e) {
+                    Logger.warning("Invalid UUID format: " + playerUuid);
+                }
+                
+                if (playerName == null) {
+                    // Try to get from database
+                    Connection conn = plugin.getDatabaseManager().getConnection();
+                    PreparedStatement stmt = conn.prepareStatement("SELECT name FROM players WHERE uuid = ?");
+                    stmt.setString(1, playerUuid);
+                    ResultSet rs = stmt.executeQuery();
+                    if (rs.next()) {
+                        playerName = rs.getString("name");
+                    }
+                    rs.close();
+                    stmt.close();
+                }
+                
+                // If still null, use a placeholder
+                if (playerName == null) {
+                    playerName = "Unknown";
+                }
+                
+                // Now call the createPurchase method with the player name
+                purchaseSuccess = plugin.getPurchaseManager().createPurchase(
+                    playerName, 
+                    productId, 
+                    price, 
+                    "API", 
+                    "completed", 
+                    paymentId > 0 ? String.valueOf(paymentId) : null
+                );
+                
+                // If the purchase was successful, update the player_uuid in the database
+                if (purchaseSuccess && paymentId > 0) {
+                    Connection conn = plugin.getDatabaseManager().getConnection();
+                    PreparedStatement stmt = conn.prepareStatement(
+                        "UPDATE purchases SET player_uuid = ? WHERE transaction_id = ?");
+                    stmt.setString(1, playerUuid);
+                    stmt.setString(2, String.valueOf(paymentId));
+                    stmt.executeUpdate();
+                    stmt.close();
+                }
+            } catch (Exception e) {
+                Logger.severe("Error creating purchase: " + e.getMessage());
+                e.printStackTrace();
+            }
             
             if (!purchaseSuccess) {
                 String response = new JSONObject()

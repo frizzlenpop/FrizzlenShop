@@ -12,6 +12,9 @@ import org.frizzlenpop.frizzlenStore.api.handlers.ProductHandler;
 import org.frizzlenpop.frizzlenStore.api.handlers.PurchaseHandler;
 import org.frizzlenpop.frizzlenStore.api.handlers.PlayerHandler;
 import org.frizzlenpop.frizzlenStore.api.handlers.StatusHandler;
+import org.frizzlenpop.frizzlenStore.api.handlers.AuthHandler;
+import org.frizzlenpop.frizzlenStore.api.handlers.UploadHandler;
+import org.frizzlenpop.frizzlenStore.api.handlers.StaticFileHandler;
 import org.frizzlenpop.frizzlenStore.util.Logger;
 
 import java.io.IOException;
@@ -20,6 +23,7 @@ import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.io.File;
 
 /**
  * Manages the HTTP API server for web communication
@@ -51,6 +55,23 @@ public class ApiManager {
         handlers.put("/api/coupons", new CouponHandler(plugin));
         handlers.put("/api/players", new PlayerHandler(plugin));
         handlers.put("/api/payment", new PaymentHandler(plugin));
+        handlers.put("/api/auth", new AuthHandler(plugin));
+        handlers.put("/api/upload", new UploadHandler(plugin));
+        
+        // Add a simple test endpoint that requires no authentication
+        handlers.put("/api/test", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                Logger.info("Test endpoint accessed from: " + exchange.getRemoteAddress());
+                String response = "{\"status\":\"ok\",\"message\":\"API server is running\"}";
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                exchange.sendResponseHeaders(200, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+            }
+        });
     }
     
     /**
@@ -58,24 +79,57 @@ public class ApiManager {
      */
     public void startApiServer() {
         try {
+            Logger.info("Starting API server...");
             int port = plugin.getConfigManager().getApiPort();
-            server = HttpServer.create(new InetSocketAddress(port), 0);
+            Logger.info("Using port: " + port);
+            
+            // Bind to 0.0.0.0 (all interfaces) instead of the default
+            Logger.info("Attempting to bind to 0.0.0.0:" + port);
+            try {
+                server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
+                Logger.info("HTTP server created successfully");
+            } catch (IOException e) {
+                // If binding to 0.0.0.0 fails, try binding to localhost
+                Logger.warning("Failed to bind to 0.0.0.0:" + port + ", trying localhost... Error: " + e.getMessage());
+                server = HttpServer.create(new InetSocketAddress("localhost", port), 0);
+                Logger.info("HTTP server created successfully on localhost:" + port);
+            }
             
             // Register API endpoint handlers
+            Logger.info("Registering API endpoint handlers...");
             for (Map.Entry<String, HttpHandler> entry : handlers.entrySet()) {
                 server.createContext(entry.getKey(), entry.getValue());
+                Logger.info("Registered handler for: " + entry.getKey());
             }
+            
+            // Add static file handler for uploads
+            String uploadsDir = plugin.getDataFolder().getAbsolutePath() + File.separator + "uploads";
+            server.createContext("/uploads", new StaticFileHandler(plugin, uploadsDir, "/uploads"));
+            Logger.info("Registered static file handler for uploads directory: " + uploadsDir);
             
             // Add a CORS handler for preflight requests
             server.createContext("/", new CorsHandler());
+            Logger.info("Registered CORS handler");
             
             // Set executor
+            Logger.info("Setting up thread pool...");
             server.setExecutor(Executors.newFixedThreadPool(10));
+            
+            // Start the server
+            Logger.info("Starting HTTP server...");
             server.start();
             
-            Logger.info("API server started on port " + port);
+            // Verify port is actually bound
+            InetSocketAddress address = server.getAddress();
+            Logger.info("API server started successfully on " + address.getHostString() + ":" + address.getPort());
+            
+            // Log a verification message to help troubleshoot
+            Logger.info("To verify if the API is accessible, try: curl http://localhost:" + port + "/api/status");
         } catch (IOException e) {
             Logger.severe("Failed to start API server: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            Logger.severe("Unexpected error starting API server: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -93,17 +147,29 @@ public class ApiManager {
     /**
      * Handle CORS for API requests
      */
-    private static class CorsHandler implements HttpHandler {
+    private class CorsHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            // Set CORS headers
-            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-            exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            // Read CORS settings from configuration
+            boolean allowCors = plugin.getConfigManager().getConfig().getBoolean("api.allow-cors", true);
+            String corsOrigins = plugin.getConfigManager().getConfig().getString("api.cors-origins", "*");
+            
+            if (allowCors) {
+                // Set CORS headers based on configuration
+                exchange.getResponseHeaders().add("Access-Control-Allow-Origin", corsOrigins);
+                exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+                exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+                exchange.getResponseHeaders().add("Access-Control-Allow-Credentials", "true");
+                exchange.getResponseHeaders().add("Access-Control-Max-Age", "3600");
+                
+                Logger.debug("CORS enabled with origins: " + corsOrigins);
+            } else {
+                Logger.debug("CORS is disabled in config");
+            }
             
             // Handle preflight requests
             if (exchange.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
-                exchange.sendResponseHeaders(204, -1);
+                exchange.sendResponseHeaders(200, -1);
                 return;
             }
             

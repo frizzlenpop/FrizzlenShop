@@ -37,7 +37,9 @@ public class ProductHandler implements HttpHandler {
         // Set CORS headers
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Credentials", "true");
+        exchange.getResponseHeaders().add("Access-Control-Max-Age", "3600");
         
         if (exchange.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
             exchange.sendResponseHeaders(204, -1);
@@ -108,28 +110,86 @@ public class ProductHandler implements HttpHandler {
     private void handleGetProducts(HttpExchange exchange) throws IOException {
         try {
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT p.*, c.name as category_name FROM products p " +
-                          "JOIN categories c ON p.category_id = c.id " +
-                          "ORDER BY p.display_order ASC";
+            
+            // Check if display_order exists in the products table
+            boolean hasDisplayOrder = false;
+            try {
+                ResultSet rs = connection.getMetaData().getColumns(null, null, "products", "display_order");
+                hasDisplayOrder = rs.next();
+                rs.close();
+            } catch (SQLException e) {
+                Logger.warning("Error checking for display_order column: " + e.getMessage());
+            }
+            
+            String query;
+            if (hasDisplayOrder) {
+                query = "SELECT p.*, c.name as category_name FROM products p " +
+                      "JOIN categories c ON p.category_id = c.id " +
+                      "ORDER BY p.display_order ASC";
+            } else {
+                query = "SELECT p.*, c.name as category_name FROM products p " +
+                      "JOIN categories c ON p.category_id = c.id " +
+                      "ORDER BY p.id ASC";
+            }
+            
             PreparedStatement statement = connection.prepareStatement(query);
             ResultSet resultSet = statement.executeQuery();
 
             JSONArray products = new JSONArray();
             while (resultSet.next()) {
                 JSONObject product = new JSONObject();
-                product.put("id", resultSet.getInt("id"));
-                product.put("name", resultSet.getString("name"));
-                product.put("description", resultSet.getString("description"));
-                product.put("price", resultSet.getDouble("price"));
-                product.put("sale_price", resultSet.getDouble("sale_price"));
-                product.put("is_on_sale", resultSet.getBoolean("is_on_sale"));
-                product.put("category_id", resultSet.getInt("category_id"));
-                product.put("category_name", resultSet.getString("category_name"));
-                product.put("image_url", resultSet.getString("image_url"));
-                product.put("display_order", resultSet.getInt("display_order"));
-                product.put("enabled", resultSet.getBoolean("enabled"));
-                product.put("commands", new JSONArray(resultSet.getString("commands")));
-                products.put(product);
+                try {
+                    // First check if the id is a UUID or numeric
+                    String idStr = resultSet.getString("id");
+                    if (idStr != null && idStr.contains("-")) {
+                        // This is likely a UUID
+                        product.put("id", idStr);
+                    } else {
+                        // This is likely a numeric ID
+                        product.put("id", resultSet.getInt("id"));
+                    }
+                    
+                    product.put("name", resultSet.getString("name"));
+                    product.put("description", resultSet.getString("description"));
+                    product.put("price", resultSet.getDouble("price"));
+                    
+                    // Only include display_order if the column exists
+                    if (hasDisplayOrder) {
+                        try {
+                            product.put("display_order", resultSet.getInt("display_order"));
+                        } catch (SQLException e) {
+                            // Ignore if the column doesn't exist
+                        }
+                    }
+                    
+                    if (resultSet.getObject("sale_price") != null) {
+                        product.put("sale_price", resultSet.getDouble("sale_price"));
+                    }
+                    
+                    // Get category_id safely
+                    try {
+                        String catIdStr = resultSet.getString("category_id");
+                        if (catIdStr != null && catIdStr.contains("-")) {
+                            // This is likely a UUID
+                            product.put("category_id", catIdStr);
+                        } else {
+                            // This is likely a numeric ID
+                            product.put("category_id", resultSet.getInt("category_id"));
+                        }
+                    } catch (Exception e) {
+                        // Use a default value if conversion fails
+                        product.put("category_id", 0);
+                    }
+                    
+                    product.put("category", resultSet.getString("category_name"));
+                    product.put("image", resultSet.getString("image_url"));
+                    product.put("commands", resultSet.getString("commands").split("\n"));
+                    product.put("created_at", resultSet.getTimestamp("created_at").toString());
+                    product.put("active", resultSet.getBoolean("active"));
+                    products.put(product);
+                } catch (SQLException e) {
+                    // Ignore if there's an error getting a product
+                }
             }
 
             resultSet.close();
@@ -170,13 +230,47 @@ public class ProductHandler implements HttpHandler {
         }
         
         try {
-            int categoryId = Integer.parseInt(parts[4]);
+            // Try to parse the category ID as an integer
+            String categoryIdStr = parts[4];
+            int categoryId;
+            
+            try {
+                categoryId = Integer.parseInt(categoryIdStr);
+            } catch (NumberFormatException e) {
+                // If it's not a valid integer, return an empty result set
+                Logger.warning("Invalid category ID format: " + categoryIdStr + ". Expected integer.");
+                JSONObject response = new JSONObject();
+                response.put("success", true);
+                response.put("products", new JSONArray());
+                sendResponse(exchange, 200, response.toString());
+                return;
+            }
             
             Connection connection = plugin.getDatabaseManager().getConnection();
-            String query = "SELECT p.*, c.name as category_name FROM products p " +
-                          "JOIN categories c ON p.category_id = c.id " +
-                          "WHERE p.category_id = ? AND p.enabled = true " +
-                          "ORDER BY p.display_order ASC";
+            
+            // Check if display_order exists in the products table
+            boolean hasDisplayOrder = false;
+            try {
+                ResultSet rs = connection.getMetaData().getColumns(null, null, "products", "display_order");
+                hasDisplayOrder = rs.next();
+                rs.close();
+            } catch (SQLException e) {
+                Logger.warning("Error checking for display_order column: " + e.getMessage());
+            }
+            
+            String query;
+            if (hasDisplayOrder) {
+                query = "SELECT p.*, c.name as category_name FROM products p " +
+                      "JOIN categories c ON p.category_id = c.id " +
+                      "WHERE p.category_id = ? AND p.active = true " +
+                      "ORDER BY p.display_order ASC";
+            } else {
+                query = "SELECT p.*, c.name as category_name FROM products p " +
+                      "JOIN categories c ON p.category_id = c.id " +
+                      "WHERE p.category_id = ? AND p.active = true " +
+                      "ORDER BY p.id ASC";
+            }
+            
             PreparedStatement statement = connection.prepareStatement(query);
             statement.setInt(1, categoryId);
             ResultSet resultSet = statement.executeQuery();
@@ -184,19 +278,58 @@ public class ProductHandler implements HttpHandler {
             JSONArray products = new JSONArray();
             while (resultSet.next()) {
                 JSONObject product = new JSONObject();
-                product.put("id", resultSet.getInt("id"));
-                product.put("name", resultSet.getString("name"));
-                product.put("description", resultSet.getString("description"));
-                product.put("price", resultSet.getDouble("price"));
-                product.put("sale_price", resultSet.getDouble("sale_price"));
-                product.put("is_on_sale", resultSet.getBoolean("is_on_sale"));
-                product.put("category_id", resultSet.getInt("category_id"));
-                product.put("category_name", resultSet.getString("category_name"));
-                product.put("image_url", resultSet.getString("image_url"));
-                product.put("display_order", resultSet.getInt("display_order"));
-                product.put("enabled", resultSet.getBoolean("enabled"));
-                product.put("commands", new JSONArray(resultSet.getString("commands")));
-                products.put(product);
+                try {
+                    // First check if the id is a UUID or numeric
+                    String idStr = resultSet.getString("id");
+                    if (idStr != null && idStr.contains("-")) {
+                        // This is likely a UUID
+                        product.put("id", idStr);
+                    } else {
+                        // This is likely a numeric ID
+                        product.put("id", resultSet.getInt("id"));
+                    }
+                    
+                    product.put("name", resultSet.getString("name"));
+                    product.put("description", resultSet.getString("description"));
+                    product.put("price", resultSet.getDouble("price"));
+                    
+                    // Only include display_order if the column exists
+                    if (hasDisplayOrder) {
+                        try {
+                            product.put("display_order", resultSet.getInt("display_order"));
+                        } catch (SQLException e) {
+                            // Ignore if the column doesn't exist
+                        }
+                    }
+                    
+                    if (resultSet.getObject("sale_price") != null) {
+                        product.put("sale_price", resultSet.getDouble("sale_price"));
+                    }
+                    
+                    // Get category_id safely
+                    try {
+                        String catIdStr = resultSet.getString("category_id");
+                        if (catIdStr != null && catIdStr.contains("-")) {
+                            // This is likely a UUID
+                            product.put("category_id", catIdStr);
+                        } else {
+                            // This is likely a numeric ID
+                            product.put("category_id", resultSet.getInt("category_id"));
+                        }
+                    } catch (Exception e) {
+                        // Use a default value if conversion fails
+                        product.put("category_id", 0);
+                    }
+                    
+                    product.put("category", resultSet.getString("category_name"));
+                    product.put("image", resultSet.getString("image_url"));
+                    product.put("commands", resultSet.getString("commands").split("\n"));
+                    product.put("created_at", resultSet.getTimestamp("created_at").toString());
+                    product.put("active", resultSet.getBoolean("active"));
+                    products.put(product);
+                } catch (SQLException e) {
+                    // Ignore if there's an error getting a product
+                }
             }
 
             resultSet.close();
@@ -204,16 +337,9 @@ public class ProductHandler implements HttpHandler {
 
             JSONObject response = new JSONObject();
             response.put("success", true);
-            response.put("category_id", categoryId);
             response.put("products", products);
             
             sendResponse(exchange, 200, response.toString());
-        } catch (NumberFormatException e) {
-            String response = new JSONObject()
-                    .put("success", false)
-                    .put("error", "Invalid category ID")
-                    .toString();
-            sendResponse(exchange, 400, response);
         } catch (SQLException e) {
             Logger.severe("Database error while getting products by category: " + e.getMessage());
             e.printStackTrace();
@@ -276,7 +402,7 @@ public class ProductHandler implements HttpHandler {
             product.put("category_name", resultSet.getString("category_name"));
             product.put("image_url", resultSet.getString("image_url"));
             product.put("display_order", resultSet.getInt("display_order"));
-            product.put("enabled", resultSet.getBoolean("enabled"));
+            product.put("enabled", resultSet.getBoolean("active"));
             product.put("commands", new JSONArray(resultSet.getString("commands")));
             
             resultSet.close();
@@ -334,7 +460,7 @@ public class ProductHandler implements HttpHandler {
             int categoryId = requestJson.getInt("category_id");
             String imageUrl = requestJson.optString("image_url", "");
             int displayOrder = requestJson.optInt("display_order", 0);
-            boolean enabled = requestJson.optBoolean("enabled", true);
+            boolean enabled = requestJson.optBoolean("active", true);
             JSONArray commands = requestJson.getJSONArray("commands");
 
             // Verify category exists
@@ -360,7 +486,7 @@ public class ProductHandler implements HttpHandler {
 
             // Create product record
             String insertQuery = "INSERT INTO products (name, description, price, sale_price, is_on_sale, " +
-                                "category_id, image_url, display_order, enabled, commands) " +
+                                "category_id, image_url, display_order, active, commands) " +
                                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             PreparedStatement insertStatement = connection.prepareStatement(insertQuery, PreparedStatement.RETURN_GENERATED_KEYS);
             insertStatement.setString(1, name);
@@ -468,8 +594,8 @@ public class ProductHandler implements HttpHandler {
                 hasUpdates = true;
             }
             
-            if (requestJson.has("enabled")) {
-                queryBuilder.append("enabled = ?, ");
+            if (requestJson.has("active")) {
+                queryBuilder.append("active = ?, ");
                 hasUpdates = true;
             }
             
@@ -550,8 +676,8 @@ public class ProductHandler implements HttpHandler {
                 statement.setInt(paramIndex++, requestJson.getInt("display_order"));
             }
             
-            if (requestJson.has("enabled")) {
-                statement.setBoolean(paramIndex++, requestJson.getBoolean("enabled"));
+            if (requestJson.has("active")) {
+                statement.setBoolean(paramIndex++, requestJson.getBoolean("active"));
             }
             
             if (requestJson.has("commands")) {

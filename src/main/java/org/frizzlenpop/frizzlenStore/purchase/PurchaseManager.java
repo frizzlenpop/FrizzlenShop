@@ -36,8 +36,12 @@ public class PurchaseManager {
     private static final String GET_PENDING_PURCHASES_COUNT = 
             "SELECT COUNT(*) FROM purchases WHERE delivered = 0";
     
-    private static final String MARK_PURCHASE_DELIVERED = 
+    private static final String MARK_PURCHASE_DELIVERED_MYSQL = 
             "UPDATE purchases SET delivered = 1, delivery_time = CURRENT_TIMESTAMP " +
+            "WHERE id = ?";
+    
+    private static final String MARK_PURCHASE_DELIVERED_SQLITE = 
+            "UPDATE purchases SET delivered = 1, delivery_time = datetime('now') " +
             "WHERE id = ?";
     
     /**
@@ -57,48 +61,137 @@ public class PurchaseManager {
      */
     private void loadPendingPurchases() {
         try {
-            PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(
-                    "SELECT DISTINCT player_name FROM purchases WHERE delivered = 0");
+            // First check if the player_name column exists
+            boolean hasPlayerNameColumn = false;
+            boolean tableExists = false;
             
-            ResultSet resultSet = statement.executeQuery();
-            
-            while (resultSet.next()) {
-                String playerName = resultSet.getString("player_name");
-                List<Purchase> purchases = getPendingPurchasesForPlayer(playerName);
+            try {
+                // Check if purchases table exists
+                ResultSet tables = plugin.getDatabaseManager().getConnection().getMetaData().getTables(
+                    null, null, "purchases", null);
+                tableExists = tables.next();
+                tables.close();
                 
-                if (!purchases.isEmpty()) {
-                    pendingPurchases.put(playerName.toLowerCase(), purchases);
+                if (!tableExists) {
+                    Logger.warning("Purchases table does not exist yet. Skipping pending purchases loading.");
+                    return;
                 }
+                
+                // Check if player_name column exists
+                ResultSet rs = plugin.getDatabaseManager().getConnection().getMetaData().getColumns(
+                    null, null, "purchases", "player_name");
+                hasPlayerNameColumn = rs.next();
+                rs.close();
+            } catch (SQLException e) {
+                Logger.warning("Error checking database schema: " + e.getMessage());
+                return;
             }
             
-            resultSet.close();
-            statement.close();
+            String query;
+            if (hasPlayerNameColumn) {
+                query = "SELECT DISTINCT player_name FROM purchases WHERE delivered = 0";
+            } else {
+                Logger.warning("player_name column not found in purchases table. Using player_uuid instead.");
+                query = "SELECT DISTINCT player_uuid FROM purchases WHERE delivered = 0";
+            }
             
-            Logger.info("Loaded pending purchases for " + pendingPurchases.size() + " players");
-        } catch (SQLException e) {
+            PreparedStatement statement = null;
+            ResultSet resultSet = null;
+            
+            try {
+                statement = plugin.getDatabaseManager().prepareStatement(query);
+                if (statement == null) {
+                    Logger.warning("Failed to prepare statement for loading pending purchases");
+                    return;
+                }
+                
+                resultSet = statement.executeQuery();
+                
+                while (resultSet.next()) {
+                    String playerIdentifier;
+                    if (hasPlayerNameColumn) {
+                        playerIdentifier = resultSet.getString("player_name");
+                    } else {
+                        playerIdentifier = resultSet.getString("player_uuid");
+                    }
+                    
+                    if (playerIdentifier == null || playerIdentifier.isEmpty()) {
+                        continue;
+                    }
+                    
+                    List<Purchase> purchases = getPendingPurchasesForPlayer(playerIdentifier, hasPlayerNameColumn);
+                    
+                    if (!purchases.isEmpty()) {
+                        pendingPurchases.put(playerIdentifier.toLowerCase(), purchases);
+                    }
+                }
+                
+                Logger.info("Loaded pending purchases for " + pendingPurchases.size() + " players");
+            } catch (SQLException e) {
+                Logger.warning("Error querying pending purchases: " + e.getMessage());
+            } finally {
+                try {
+                    if (resultSet != null) resultSet.close();
+                    if (statement != null) statement.close();
+                } catch (SQLException e) {
+                    Logger.warning("Error closing resources: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
             Logger.severe("Failed to load pending purchases: " + e.getMessage());
         }
     }
     
     /**
      * Get pending purchases for a player
-     * @param playerName The player name
+     * @param playerIdentifier The player name or UUID
+     * @param isPlayerName Whether the identifier is a player name or UUID
      * @return List of pending purchases
      */
-    private List<Purchase> getPendingPurchasesForPlayer(String playerName) {
+    private List<Purchase> getPendingPurchasesForPlayer(String playerIdentifier, boolean isPlayerName) {
         List<Purchase> purchases = new ArrayList<>();
         
         try {
-            PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(GET_PENDING_PURCHASES);
-            statement.setString(1, playerName);
+            String query;
+            if (isPlayerName) {
+                query = "SELECT p.id, p.transaction_id, p.player_name, p.player_uuid, " +
+                        "p.product_id, p.price_paid, p.payment_method, pr.commands, p.payment_status " +
+                        "FROM purchases p " +
+                        "JOIN products pr ON p.product_id = pr.id " +
+                        "WHERE p.player_name = ? AND p.delivered = 0";
+            } else {
+                query = "SELECT p.id, p.transaction_id, p.player_name, p.player_uuid, " +
+                        "p.product_id, p.price_paid, p.payment_method, pr.commands, p.payment_status " +
+                        "FROM purchases p " +
+                        "JOIN products pr ON p.product_id = pr.id " +
+                        "WHERE p.player_uuid = ? AND p.delivered = 0";
+            }
+            
+            PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(query);
+            statement.setString(1, playerIdentifier);
             
             ResultSet resultSet = statement.executeQuery();
             
             while (resultSet.next()) {
                 int id = resultSet.getInt("id");
                 String transactionId = resultSet.getString("transaction_id");
-                String name = resultSet.getString("player_name");
-                String uuidStr = resultSet.getString("player_uuid");
+                String name = null;
+                try {
+                    name = resultSet.getString("player_name");
+                } catch (SQLException e) {
+                    // player_name column doesn't exist, use the identifier
+                    if (isPlayerName) {
+                        name = playerIdentifier;
+                    }
+                }
+                
+                String uuidStr = null;
+                try {
+                    uuidStr = resultSet.getString("player_uuid");
+                } catch (SQLException e) {
+                    // player_uuid column doesn't exist
+                }
+                
                 UUID uuid = uuidStr != null ? UUID.fromString(uuidStr) : null;
                 int productId = resultSet.getInt("product_id");
                 double pricePaid = resultSet.getDouble("price_paid");
@@ -114,7 +207,7 @@ public class PurchaseManager {
             resultSet.close();
             statement.close();
         } catch (SQLException e) {
-            Logger.severe("Failed to get pending purchases for player " + playerName + ": " + e.getMessage());
+            Logger.severe("Failed to get pending purchases for player " + playerIdentifier + ": " + e.getMessage());
         }
         
         return purchases;
@@ -148,13 +241,25 @@ public class PurchaseManager {
      */
     public void deliverPendingPurchases(Player player) {
         String playerName = player.getName().toLowerCase();
+        String playerUuid = player.getUniqueId().toString().toLowerCase();
         
-        // Check if player has pending purchases
-        if (!pendingPurchases.containsKey(playerName)) {
+        // Check if player has pending purchases by name
+        boolean hasPendingPurchases = false;
+        String cacheKey = null;
+        
+        if (pendingPurchases.containsKey(playerName)) {
+            hasPendingPurchases = true;
+            cacheKey = playerName;
+        } else if (pendingPurchases.containsKey(playerUuid)) {
+            hasPendingPurchases = true;
+            cacheKey = playerUuid;
+        }
+        
+        if (!hasPendingPurchases) {
             return;
         }
         
-        List<Purchase> purchases = pendingPurchases.get(playerName);
+        List<Purchase> purchases = pendingPurchases.get(cacheKey);
         List<Purchase> deliveredPurchases = new ArrayList<>();
         
         for (Purchase purchase : purchases) {
@@ -169,7 +274,7 @@ public class PurchaseManager {
         
         // If no more pending purchases, remove from map
         if (purchases.isEmpty()) {
-            pendingPurchases.remove(playerName);
+            pendingPurchases.remove(cacheKey);
         }
     }
     
@@ -182,7 +287,10 @@ public class PurchaseManager {
     public boolean deliverPurchase(Player player, Purchase purchase) {
         try {
             // Mark as delivered in the database first
-            PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(MARK_PURCHASE_DELIVERED);
+            String dbType = plugin.getConfigManager().getDatabaseConfig().getType().toLowerCase();
+            String markDeliveredSql = dbType.equals("sqlite") ? MARK_PURCHASE_DELIVERED_SQLITE : MARK_PURCHASE_DELIVERED_MYSQL;
+            
+            PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(markDeliveredSql);
             statement.setInt(1, purchase.getId());
             statement.executeUpdate();
             statement.close();
@@ -256,10 +364,27 @@ public class PurchaseManager {
                 if (player != null && player.isOnline()) {
                     return deliverPurchase(player, purchase);
                 } else {
+                    // Check if delivery_attempted column exists
+                    boolean hasDeliveryAttemptedColumn = false;
+                    try {
+                        ResultSet rs = plugin.getDatabaseManager().getConnection().getMetaData().getColumns(
+                            null, null, "purchases", "delivery_attempted");
+                        hasDeliveryAttemptedColumn = rs.next();
+                        rs.close();
+                    } catch (SQLException e) {
+                        Logger.warning("Error checking for delivery_attempted column: " + e.getMessage());
+                    }
+                    
                     // Mark as still pending in the database
-                    PreparedStatement markStatement = plugin.getDatabaseManager().prepareStatement(
-                            "UPDATE purchases SET delivery_attempted = delivery_attempted + 1 " +
-                            "WHERE id = ?");
+                    String updateSql;
+                    if (hasDeliveryAttemptedColumn) {
+                        updateSql = "UPDATE purchases SET delivery_attempted = delivery_attempted + 1 WHERE id = ?";
+                    } else {
+                        // Column doesn't exist, just do a simple update that won't fail
+                        updateSql = "UPDATE purchases SET delivered = 0 WHERE id = ?";
+                    }
+                    
+                    PreparedStatement markStatement = plugin.getDatabaseManager().prepareStatement(updateSql);
                     markStatement.setInt(1, purchaseId);
                     markStatement.executeUpdate();
                     markStatement.close();
@@ -299,25 +424,91 @@ public class PurchaseManager {
     public boolean createPurchase(String playerName, int productId, double pricePaid, 
                                  String paymentMethod, String paymentStatus, String transactionId) {
         try {
-            // Get player UUID if online
-            Player player = Bukkit.getPlayerExact(playerName);
-            String uuidStr = player != null ? player.getUniqueId().toString() : null;
+            // Check if this is a UUID
+            boolean isUuid = false;
+            UUID playerUuid = null;
+            Player player = null;
+            
+            try {
+                playerUuid = UUID.fromString(playerName);
+                isUuid = true;
+                player = Bukkit.getPlayer(playerUuid);
+            } catch (IllegalArgumentException e) {
+                // Not a UUID format, assume it's a player name
+                player = Bukkit.getPlayerExact(playerName);
+            }
+            
+            String uuidStr = null;
+            String nameToUse = playerName;
+            
+            if (isUuid) {
+                uuidStr = playerName;
+                
+                // If we have a UUID but no player name, try to find the name
+                if (player != null) {
+                    nameToUse = player.getName();
+                } else {
+                    // Try to get player name from database
+                    PreparedStatement playerStatement = plugin.getDatabaseManager().prepareStatement(
+                            "SELECT name FROM players WHERE uuid = ?");
+                    playerStatement.setString(1, uuidStr);
+                    ResultSet playerResult = playerStatement.executeQuery();
+                    
+                    if (playerResult.next()) {
+                        nameToUse = playerResult.getString("name");
+                    } else {
+                        nameToUse = "Unknown"; // Fallback name
+                    }
+                    
+                    playerResult.close();
+                    playerStatement.close();
+                }
+            } else {
+                // We have a player name but might need the UUID
+                if (player != null) {
+                    uuidStr = player.getUniqueId().toString();
+                }
+            }
+            
             String ipAddress = player != null ? player.getAddress().getAddress().getHostAddress() : null;
             
-            // Create SQL statement
-            String sql = "INSERT INTO purchases (transaction_id, player_name, player_uuid, " +
-                         "product_id, price_paid, payment_method, payment_status, ip_address) " +
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+            // Check if player_name column exists in purchases table
+            boolean hasPlayerNameColumn = false;
+            try {
+                ResultSet rs = plugin.getDatabaseManager().getConnection().getMetaData().getColumns(
+                    null, null, "purchases", "player_name");
+                hasPlayerNameColumn = rs.next();
+                rs.close();
+            } catch (SQLException e) {
+                Logger.warning("Error checking for player_name column: " + e.getMessage());
+            }
+            
+            // Create SQL statement based on column existence
+            String sql;
+            if (hasPlayerNameColumn) {
+                sql = "INSERT INTO purchases (transaction_id, player_name, player_uuid, " +
+                      "product_id, price_paid, payment_method, payment_status, ip_address) " +
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+            } else {
+                sql = "INSERT INTO purchases (transaction_id, player_uuid, " +
+                      "product_id, price_paid, payment_method, payment_status, ip_address) " +
+                      "VALUES (?, ?, ?, ?, ?, ?, ?)";
+            }
             
             PreparedStatement statement = plugin.getDatabaseManager().prepareStatement(sql);
-            statement.setString(1, transactionId);
-            statement.setString(2, playerName);
-            statement.setString(3, uuidStr);
-            statement.setInt(4, productId);
-            statement.setDouble(5, pricePaid);
-            statement.setString(6, paymentMethod);
-            statement.setString(7, paymentStatus);
-            statement.setString(8, ipAddress);
+            int paramIndex = 1;
+            statement.setString(paramIndex++, transactionId);
+            
+            if (hasPlayerNameColumn) {
+                statement.setString(paramIndex++, nameToUse);
+            }
+            
+            statement.setString(paramIndex++, uuidStr);
+            statement.setInt(paramIndex++, productId);
+            statement.setDouble(paramIndex++, pricePaid);
+            statement.setString(paramIndex++, paymentMethod);
+            statement.setString(paramIndex++, paymentStatus);
+            statement.setString(paramIndex++, ipAddress);
             
             int result = statement.executeUpdate();
             statement.close();
@@ -341,16 +532,26 @@ public class PurchaseManager {
                 // If player is online, deliver immediately
                 if (player != null && commands != null) {
                     // Get the purchase ID
-                    PreparedStatement idStatement = plugin.getDatabaseManager().prepareStatement(
-                            "SELECT id FROM purchases WHERE transaction_id = ?");
-                    idStatement.setString(1, transactionId);
+                    String idQuery;
+                    if (isUuid) {
+                        idQuery = "SELECT id FROM purchases WHERE player_uuid = ? ORDER BY id DESC LIMIT 1";
+                    } else {
+                        idQuery = "SELECT id FROM purchases WHERE transaction_id = ?";
+                    }
+                    
+                    PreparedStatement idStatement = plugin.getDatabaseManager().prepareStatement(idQuery);
+                    if (isUuid) {
+                        idStatement.setString(1, uuidStr);
+                    } else {
+                        idStatement.setString(1, transactionId);
+                    }
                     
                     ResultSet idResult = idStatement.executeQuery();
                     if (idResult.next()) {
                         int purchaseId = idResult.getInt("id");
                         
                         // Create purchase object and deliver
-                        Purchase purchase = new Purchase(purchaseId, transactionId, playerName, 
+                        Purchase purchase = new Purchase(purchaseId, transactionId, nameToUse, 
                                                         player.getUniqueId(), productId, pricePaid, 
                                                         paymentMethod, paymentStatus, commands);
                         
@@ -362,25 +563,53 @@ public class PurchaseManager {
                 } else if (commands != null) {
                     // Add to pending purchases
                     // Get the purchase ID
-                    PreparedStatement idStatement = plugin.getDatabaseManager().prepareStatement(
-                            "SELECT id FROM purchases WHERE transaction_id = ?");
-                    idStatement.setString(1, transactionId);
+                    String idQuery;
+                    if (isUuid) {
+                        idQuery = "SELECT id FROM purchases WHERE player_uuid = ? ORDER BY id DESC LIMIT 1";
+                    } else {
+                        idQuery = "SELECT id FROM purchases WHERE transaction_id = ?";
+                    }
+                    
+                    PreparedStatement idStatement = plugin.getDatabaseManager().prepareStatement(idQuery);
+                    if (isUuid) {
+                        idStatement.setString(1, uuidStr);
+                    } else {
+                        idStatement.setString(1, transactionId);
+                    }
                     
                     ResultSet idResult = idStatement.executeQuery();
                     if (idResult.next()) {
                         int purchaseId = idResult.getInt("id");
                         
                         // Create purchase object
-                        Purchase purchase = new Purchase(purchaseId, transactionId, playerName, 
-                                                        null, productId, pricePaid, 
+                        UUID uuid = null;
+                        if (isUuid) {
+                            try {
+                                uuid = UUID.fromString(uuidStr);
+                            } catch (IllegalArgumentException e) {
+                                // Not a valid UUID
+                            }
+                        }
+                        
+                        Purchase purchase = new Purchase(purchaseId, transactionId, nameToUse, 
+                                                        uuid, productId, pricePaid, 
                                                         paymentMethod, paymentStatus, commands);
                         
                         // Add to pending purchases
-                        if (!pendingPurchases.containsKey(playerName.toLowerCase())) {
-                            pendingPurchases.put(playerName.toLowerCase(), new ArrayList<>());
+                        String cacheKey;
+                        if (hasPlayerNameColumn && nameToUse != null && !nameToUse.equals("Unknown")) {
+                            cacheKey = nameToUse.toLowerCase();
+                        } else if (uuidStr != null) {
+                            cacheKey = uuidStr.toLowerCase();
+                        } else {
+                            cacheKey = nameToUse.toLowerCase();
                         }
                         
-                        pendingPurchases.get(playerName.toLowerCase()).add(purchase);
+                        if (!pendingPurchases.containsKey(cacheKey)) {
+                            pendingPurchases.put(cacheKey, new ArrayList<>());
+                        }
+                        
+                        pendingPurchases.get(cacheKey).add(purchase);
                     }
                     
                     idResult.close();
@@ -471,7 +700,7 @@ public class PurchaseManager {
             String transactionId = "PAY-" + paymentId;
             
             // Call the other createPurchase method
-            boolean success = createPurchase(playerName, productId, amount, gateway, "completed", transactionId);
+            boolean success = createPurchase(playerUuid, productId, amount, gateway, "completed", transactionId);
             
             if (success) {
                 // Get the purchase ID
@@ -497,4 +726,6 @@ public class PurchaseManager {
             return -1;
         }
     }
+    
+
 } 

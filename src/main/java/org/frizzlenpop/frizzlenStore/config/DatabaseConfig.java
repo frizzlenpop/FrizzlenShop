@@ -82,14 +82,66 @@ public class DatabaseConfig {
      * @return The JDBC URL
      */
     public String getJdbcUrl() {
-        if ("mysql".equalsIgnoreCase(type)) {
-            return "jdbc:mysql://" + host + ":" + port + "/" + database + 
-                   "?useSSL=false&serverTimezone=UTC";
-        } else if ("sqlite".equalsIgnoreCase(type)) {
-            return "jdbc:sqlite:" + database;
+        // Convert localhost to IP address for more reliable connectivity
+        String effectiveHost = host;
+        if ("localhost".equalsIgnoreCase(effectiveHost)) {
+            effectiveHost = "127.0.0.1";
         }
         
-        // Default to MySQL
-        return "jdbc:mysql://" + host + ":" + port + "/" + database;
+        if ("mysql".equalsIgnoreCase(type)) {
+            // Build a standard MySQL JDBC URL
+            StringBuilder url = new StringBuilder("jdbc:mysql://");
+            
+            // Specify host, port and database
+            url.append(effectiveHost)
+               .append(":")
+               .append(port)
+               .append("/")
+               .append(database);
+            
+            // Add standard connection parameters
+            url.append("?useSSL=false")
+               .append("&allowPublicKeyRetrieval=true")
+               .append("&connectTimeout=5000")
+               .append("&socketTimeout=30000")
+               .append("&autoReconnect=true");
+            
+            // Add additional parameters for better stability
+            url.append("&tcpKeepAlive=true")
+               .append("&useUnicode=true")
+               .append("&characterEncoding=UTF-8");
+            
+            return url.toString();
+        } else if ("mariadb".equalsIgnoreCase(type)) {
+            // Build a standard MariaDB JDBC URL
+            StringBuilder url = new StringBuilder("jdbc:mariadb://");
+            
+            // Specify host, port and database
+            url.append(effectiveHost)
+               .append(":")
+               .append(port)
+               .append("/")
+               .append(database);
+            
+            // Add standard connection parameters
+            url.append("?useSSL=false")
+               .append("&allowPublicKeyRetrieval=true")
+               .append("&connectTimeout=5000")
+               .append("&socketTimeout=30000")
+               .append("&autoReconnect=true");
+            
+            // Add additional parameters for better stability
+            url.append("&tcpKeepAlive=true")
+               .append("&useUnicode=true")
+               .append("&characterEncoding=UTF-8");
+            
+            return url.toString();
+        } else if ("sqlite".equalsIgnoreCase(type)) {
+            // For SQLite, use a file in the plugin's data folder
+            return "jdbc:sqlite:plugins/FrizzlenStore/database.db";
+        }
+        
+        // Default to MySQL with basic parameters
+        return "jdbc:mysql://" + effectiveHost + ":" + port + "/" + database + "?useSSL=false&allowPublicKeyRetrieval=true";
     }
 } 

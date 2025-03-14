@@ -24,12 +24,16 @@ public class ConfigManager {
     private static final String DEFAULT_API_URL = "http://localhost:3000";
     private static final int DEFAULT_API_PORT = 8080;
     private static final String DEFAULT_DATABASE_TYPE = "mysql";
+    private static final String DEFAULT_MARIADB_TYPE = "mariadb";
     private static final String DEFAULT_DATABASE_HOST = "localhost";
     private static final int DEFAULT_DATABASE_PORT = 3306;
     private static final String DEFAULT_DATABASE_NAME = "frizzlenstore";
     private static final String DEFAULT_DATABASE_USER = "root";
     private static final String DEFAULT_DATABASE_PASSWORD = "";
     private static final boolean DEFAULT_DEBUG_MODE = false;
+    private static final boolean DEFAULT_ALLOW_CORS = true;
+    private static final String DEFAULT_CORS_ORIGINS = "*";
+    private static final String DEFAULT_SERVER_URL = "http://localhost:8081";
     
     public ConfigManager(FrizzlenStore plugin) {
         this.plugin = plugin;
@@ -66,6 +70,18 @@ public class ConfigManager {
         
         if (!config.contains("api.port")) {
             config.set("api.port", DEFAULT_API_PORT);
+        }
+        
+        if (!config.contains("api.allow-cors")) {
+            config.set("api.allow-cors", DEFAULT_ALLOW_CORS);
+        }
+        
+        if (!config.contains("api.cors-origins")) {
+            config.set("api.cors-origins", DEFAULT_CORS_ORIGINS);
+        }
+        
+        if (!config.contains("api.server-url")) {
+            config.set("api.server-url", DEFAULT_SERVER_URL);
         }
         
         if (!config.contains("debug")) {
@@ -169,6 +185,14 @@ public class ConfigManager {
         FileConfiguration dbConfig = getCustomConfig("database.yml");
         
         String type = dbConfig.getString("type", DEFAULT_DATABASE_TYPE);
+        // Validate database type
+        if (!type.equalsIgnoreCase("mysql") && 
+            !type.equalsIgnoreCase("mariadb") && 
+            !type.equalsIgnoreCase("sqlite")) {
+            Logger.warning("Invalid database type: " + type + ". Using default: " + DEFAULT_DATABASE_TYPE);
+            type = DEFAULT_DATABASE_TYPE;
+        }
+        
         String host = dbConfig.getString("host", DEFAULT_DATABASE_HOST);
         int port = dbConfig.getInt("port", DEFAULT_DATABASE_PORT);
         String name = dbConfig.getString("database", DEFAULT_DATABASE_NAME);

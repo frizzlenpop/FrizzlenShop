@@ -1,14 +1,14 @@
 # Database Configuration
-# Available types: mysql, sqlite
+# Available types: mysql, mariadb, sqlite
 
 # Database type
-type: "mysql"
+type: "mariadb"
 
-# MySQL settings (only used if type is mysql)
+# Database connection settings (used for mysql and mariadb)
 host: "localhost"
 port: 3306
 database: "frizzlenstore"
-username: "root"
+username: "frizzlenstore"
 password: ""
 
 # Connection pool settings
